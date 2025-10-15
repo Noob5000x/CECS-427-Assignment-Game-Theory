@@ -1,20 +1,39 @@
+# Modules imported for assignment
 import networkx as nx
 import numpy as np
 from scipy.optimize import minimize
 import argparse
 import matplotlib.pyplot as plt
 
+# Optimization Objective Functions
 def total_cost_path_flow(path_flows, edge_to_path_matrix, a, b):
+    '''
+    Calculates the Total System Travel Time or Social Optimum
+    Flow on edge * Cost on Edge
+    '''
+    # Converts path flows to edge flows
     edge_flows = edge_to_path_matrix @ path_flows
+    # Calculates c(x) = ax + b
     cost = np.sum(edge_flows * (a * edge_flows + b))
+    # Returns total cost
     return cost
 
 def beckmann_objective_path_flow(path_flows, edge_to_path_matrix, a, b):
+    '''
+    Calculates the Beckmann's equivalent convex minimization function to satisfy the User Equilibrium
+    '''
+    # Convert path flows to edge flows
     edge_flows = edge_to_path_matrix @ path_flows
+    # Calculates and returns the Beckmann objective
     beckmann = np.sum(a * edge_flows**2 / 2 + b * edge_flows)
     return beckmann
 
 def main():
+    '''
+    Main program logic
+    '''
+
+    # Set up command-line argument parser
     parser = argparse.ArgumentParser(description='Traffic Equilibrium Analysis')
     parser.add_argument('graph_file', help='GML graph file')
     parser.add_argument('n_vehicles', type=float, help='Number of vehicles')
@@ -31,6 +50,7 @@ def main():
         source = args.source
         target = args.target
         
+        # Checks if the specified source & target nodes exist in the graph
         if source not in G or target not in G:
             print(f"Error: Source ({source}) or Target ({target}) not in graph.")
             print(f"Available nodes: {list(G.nodes())}")
@@ -38,7 +58,7 @@ def main():
                
         print(f"Graph {args.graph_file} has {G.number_of_nodes()} nodes and {G.number_of_edges()} edges")
 
-        # Check that all edges have required parameters 'a' and 'b'
+        # Validate edge parameters and convert them to float for calculations
         for u, v in G.edges():
             edge_data = G[u][v]
             if 'a' not in edge_data or 'b' not in edge_data:
@@ -50,10 +70,10 @@ def main():
             except ValueError:
                 print(f"Error: Edge parameters 'a' or 'b' on edge ({u}, {v}) are not valid numbers.")
                 return
-
         
         print("✓ All edges have required parameters 'a' and 'b'")
 
+        # Find all simple paths (routes) between source and target
         all_paths = list(nx.all_simple_paths(G, source=source, target=target))
         if not all_paths:
             print(f"Error: No path found from source {source} to target {target}.")
@@ -67,6 +87,7 @@ def main():
         a = np.array([G[u][v]['a'] for u, v, in edges], dtype=float)
         b = np.array([G[u][v]['b'] for u, v, in edges], dtype=float)
 
+        # Construct the Edge-to-Path Incidence Matrix (A)
         edge_to_path_matrix = np.zeros((n_edges, n_paths))
         edge_to_index = {edge: i for i, edge in enumerate(edges)}
 
@@ -111,6 +132,7 @@ def main():
             else:
                 print(f"({u},{v})   {cost_fn:<12} {ue_val:<10.3f} {so_val:<10.3f}")
         
+        # Print Path flows
         print("\n" + "-"*45)
         print(f"{'Path':<12} {'UE Path Flow':<16} {'SO Path Flow':<16}")
         print("-" * 45)
@@ -126,6 +148,7 @@ def main():
                 print(f"{path_str:<12} {ue_path_val:<16.3f} {so_path_val:<16.3f}")
 
         if ue_edge_flows is not None and so_edge_flows is not None:
+            # Calculate final total costs based on the identified flows
             ue_cost = total_cost_path_flow(ue_path_flows, edge_to_path_matrix, a, b)
             so_cost = total_cost_path_flow(so_path_flows, edge_to_path_matrix, a, b)
             
