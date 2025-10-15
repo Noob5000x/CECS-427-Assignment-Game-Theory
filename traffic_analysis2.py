@@ -161,8 +161,8 @@ def main():
             x = np.arange(n_edges)
             width = 0.4
 
-            rects1 = plt.bar(x - width/2, ue_edge_flows, width, label='User Equilibrium', alpha=0.7)
-            rects2 = plt.bar(x + width/2, so_edge_flows, width, label='Social Optimum', alpha=0.7)
+            plt.bar(x - width/2, ue_edge_flows, width, label='User Equilibrium', alpha=0.7)
+            plt.bar(x + width/2, so_edge_flows, width, label='Social Optimum', alpha=0.7)
 
             plt.ylabel('Vehicle Flow')
             plt.title(f'Flow Comparison (Total Vehicles = {args.n_vehicles:.2f})')
