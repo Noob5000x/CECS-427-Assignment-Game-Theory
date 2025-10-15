@@ -4,12 +4,22 @@ from scipy.optimize import minimize
 import argparse
 import matplotlib.pyplot as plt
 
+def total_cost_path_flow(path_flows, edge_to_path_matrix, a, b):
+    edge_flows = edge_to_path_matrix @ path_flows
+    cost = np.sum(edge_flows * (a * edge_flows + b))
+    return cost
+
+def beckmann_objective_path_flow(path_flows, edge_to_path_matrix, a, b):
+    edge_flows = edge_to_path_matrix @ path_flows
+    beckmann = np.sum(a * edge_flows**2 / 2 + b * edge_flows)
+    return beckmann
+
 def main():
     parser = argparse.ArgumentParser(description='Traffic Equilibrium Analysis')
     parser.add_argument('graph_file', help='GML graph file')
-    parser.add_argument('n_vehicles', type=int, help='Number of vehicles')
-    parser.add_argument('source', type=int, help='Source node')
-    parser.add_argument('target', type=int, help='Target node')
+    parser.add_argument('n_vehicles', type=float, help='Number of vehicles')
+    parser.add_argument('source', type=str, help='Source node')
+    parser.add_argument('target', type=str, help='Target node')
     parser.add_argument('--plot', action='store_true', help='Plot the graph')
     
     args = parser.parse_args()
@@ -17,122 +27,128 @@ def main():
     try:
         # Read graph
         G = nx.read_gml(args.graph_file)
-        edges = list(G.edges())
+
+        source = args.source
+        target = args.target
         
-        if not G.is_directed():
-            print(f"Error: file {args.graph_file} is not directed")
+        if source not in G or target not in G:
+            print(f"Error: Source ({source}) or Target ({target}) not in graph.")
+            print(f"Available nodes: {list(G.nodes())}")
             return
-        if G.number_of_edges() == 0:
-            print(f"Error: file {args.graph_file} has no edges")
-            return
-        
+               
         print(f"Graph {args.graph_file} has {G.number_of_nodes()} nodes and {G.number_of_edges()} edges")
 
-        if str(args.source) not in G:
-            print(f"Error: file {args.graph_file} does not contain source node")
-            print(f"Available nodes: {list(G.nodes())}")
-            return
-        
-        if str(args.target) not in G:
-            print(f"Error: file {args.graph_file} does not contain target node")
-            print(f"Available nodes: {list(G.nodes())}")
-            return
-
         # Check that all edges have required parameters 'a' and 'b'
-        if not nx.has_path(G, str(args.source), str(args.target)):
-            print(f"Error: no path from {args.source} to {args.target} in {args.graph_file}")
-            return
-        
         for u, v in G.edges():
             edge_data = G[u][v]
             if 'a' not in edge_data or 'b' not in edge_data:
                 print(f"Error: file {args.graph_file} does not contain edge parameters 'a' and 'b'")
-                return False
+                return
+            try:
+                edge_data['a'] = float(edge_data['a'])
+                edge_data['b'] = float(edge_data['b'])
+            except ValueError:
+                print(f"Error: Edge parameters 'a' or 'b' on edge ({u}, {v}) are not valid numbers.")
+                return
+
         
         print("✓ All edges have required parameters 'a' and 'b'")
 
+        all_paths = list(nx.all_simple_paths(G, source=source, target=target))
+        if not all_paths:
+            print(f"Error: No path found from source {source} to target {target}.")
+            return
+
+        n_edges = G.number_of_edges()
+        edges = list(G.edges())
+        n_paths = len(all_paths)
+
         # Get cost parameters
-        a = []
-        b = []
-        for u, v in edges:
-            edge_data = G[u][v]
-            a.append(edge_data.get('a', 0))
-            b.append(edge_data.get('b', 0))
-        
-        a = np.array(a, dtype=float)
-        b = np.array(b, dtype=float)
-        
-        # Cost functions
-        def edge_cost(flow, idx):
-            return a[idx] * flow + b[idx]
-        
-        def total_cost(flows):
-            return sum(flows[i] * edge_cost(flows[i], i) for i in range(len(flows)))
-        
-        def beckmann_objective(flows):
-            return sum(a[i] * flows[i]**2 / 2 + b[i] * flows[i] for i in range(len(flows)))
+        a = np.array([G[u][v]['a'] for u, v, in edges], dtype=float)
+        b = np.array([G[u][v]['b'] for u, v, in edges], dtype=float)
+
+        edge_to_path_matrix = np.zeros((n_edges, n_paths))
+        edge_to_index = {edge: i for i, edge in enumerate(edges)}
+
+        for j, path in enumerate(all_paths):
+            path_edges = list(zip(path[:-1], path[1:]))
+            for u, v in path_edges:
+                edge_index = edge_to_index[(u, v)]
+                edge_to_path_matrix[edge_index, j] = 1
         
         # Constraints: total flow = n_vehicles, all flows >= 0
-        nodes = list(G.nodes)
-        node_idx = {n: i for i, n in enumerate(nodes)}
-        src = str(args.source)
-        tgt = str(args.target)
-
-        B = np.zeros((len(nodes), len(edges)), dtype=float)
-        for j, (u,v) in enumerate(edges):
-            B[node_idx[u], j] += 1.0
-            B[node_idx[v], j] -= 1.0
-        
-        d = np.zeros(len(nodes), dtype=float)
-        d[node_idx[src]] = float(args.n_vehicles)
-        d[node_idx[tgt]] = -float(args.n_vehicles)
-        
-        constraints = ({'type': 'eq', 'fun': lambda x, B=B, d=d: B.dot(x) - d},)
-        bounds = [(0, args.n_vehicles) for _ in range(len(edges))]
-        x0 = np.zeros(len(edges))   # initial guess
+        constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - args.n_vehicles})
+        bounds = [(0, args.n_vehicles) for _ in range(n_paths)]
+        x0 = np.ones(n_paths) * args.n_vehicles / n_paths  # initial guess
         
         # Compute User Equilibrium
-        result_ue = minimize(beckmann_objective, x0, method='SLSQP', 
+        result_ue = minimize(beckmann_objective_path_flow, x0, args= (edge_to_path_matrix, a, b), method='SLSQP', 
                            bounds=bounds, constraints=constraints)
-        ue_flows = result_ue.x if result_ue.success else None
+        ue_path_flows = result_ue.x if result_ue.success else None
+        ue_edge_flows = edge_to_path_matrix @ ue_path_flows if ue_path_flows is not None else None
         
         # Compute Social Optimum
-        result_so = minimize(total_cost, x0, method='SLSQP', 
+        result_so = minimize(total_cost_path_flow, x0, args=(edge_to_path_matrix, a, b), method='SLSQP', 
                            bounds=bounds, constraints=constraints)
-        so_flows = result_so.x if result_so.success else None
+        so_path_flows = result_so.x if result_so.success else None
+        so_edge_flows = edge_to_path_matrix @ so_path_flows if so_path_flows is not None else None
         
         # Print results
-        print("\n" + "="*50)
+        print("\n" + "="*70)
         print("TRAFFIC EQUILIBRIUM RESULTS")
-        print("="*50)
-        print(f"Vehicles: {args.n_vehicles}, Source: {src}, Target: {tgt}")
+        print("="*70)
+        print(f"Vehicles: {args.n_vehicles:.2f}, Source: {source}, Target: {target}")
         print(f"\n{'Edge':<8} {'Cost fn':<12} {'UE Flow':<10} {'SO Flow':<10}")
         print("-" * 45)
         
         for i, (u, v) in enumerate(edges):
-            ue_text = f"{ue_flows[i]:.3f}" if ue_flows is not None else "FAIL"
-            so_text = f"{so_flows[i]:.3f}" if so_flows is not None else "FAIL"
-            print(f"({u},{v})   {a[i]:.1f}x+{b[i]:.1f}   {ue_text:<10} {so_text:<10}")
+            cost_fn = f"{a[i]:.1f}x+{b[i]:.1f}"
+            ue_val = ue_edge_flows[i] if ue_edge_flows is not None else "FAIL"
+            so_val = so_edge_flows[i] if so_edge_flows is not None else "FAIL"
+
+            if isinstance(ue_val, str):
+                print(f"({u}, {v})  {cost_fn:<12} {ue_val:<10} {so_val:<10}")
+            else:
+                print(f"({u},{v})   {cost_fn:<12} {ue_val:<10.3f} {so_val:<10.3f}")
         
-        if ue_flows is not None and so_flows is not None:
-            ue_cost = total_cost(ue_flows)
-            so_cost = total_cost(so_flows)
+        print("\n" + "-"*45)
+        print(f"{'Path':<12} {'UE Path Flow':<16} {'SO Path Flow':<16}")
+        print("-" * 45)
+
+        for j, path in enumerate(all_paths):
+            path_str = "->".join(path)
+            ue_path_val = ue_path_flows[j] if ue_path_flows is not None else "FAIL"
+            so_path_val = so_path_flows[j] if so_path_flows is not None else "FAIL"
+
+            if isinstance(ue_path_val, str):
+                print(f"{path_str:<12} {ue_path_val:<16} {so_path_val:<16}")
+            else:
+                print(f"{path_str:<12} {ue_path_val:<16.3f} {so_path_val:<16.3f}")
+
+        if ue_edge_flows is not None and so_edge_flows is not None:
+            ue_cost = total_cost_path_flow(ue_path_flows, edge_to_path_matrix, a, b)
+            so_cost = total_cost_path_flow(so_path_flows, edge_to_path_matrix, a, b)
+            
+            print("\n" + "="*45)
+            print("SUMMARY")
+            print("="*45)
             print(f"\nUE Total Cost: {ue_cost:.3f}")
             print(f"SO Total Cost: {so_cost:.3f}")
-            if so_cost > 0:
-                print(f"Price of Anarchy: {ue_cost/so_cost:.3f}")
-            else:
-                print("Price of Anarchy: undefined (SO cost is 0)")
+            print(f"Price of Anarchy: {ue_cost/so_cost:.3f}")
         
         # Plot if requested
-        if args.plot:
+        if args.plot and ue_edge_flows is not None and so_edge_flows is not None:
             plt.figure(figsize=(12, 5))
             
             # Plot 1: Network
             plt.subplot(1, 2, 1)
-            pos = nx.spring_layout(G)
+            try:
+                pos = nx.planar_layout(G)
+            except nx.NetworkXException:
+                pos = nx.spring_layout(G)
+
             nx.draw(G, pos, with_labels=True, node_color='lightblue', 
-                    node_size=500, font_size=10, arrows=True)
+                    node_size=800, font_size=10, arrows=True, arrowsize=20)
             
             edge_labels = {(u, v): f"{a[i]:.1f}x+{b[i]:.1f}" 
                           for i, (u, v) in enumerate(edges)}
@@ -140,27 +156,19 @@ def main():
             plt.title("Network with Cost Functions")
             
             # Plot 2: Flow comparison
-            if ue_flows is not None and so_flows is not None:
-                plt.subplot(1, 2, 2)
-                x = range(len(edges))
-                plt.bar([i-0.2 for i in x], ue_flows, 0.4, label='User Equilibrium', alpha=0.7)
-                plt.bar([i+0.2 for i in x], so_flows, 0.4, label='Social Optimum', alpha=0.7)
-                plt.xticks(x, [f'({u},{v})' for u, v in edges], rotation=45)
-                plt.ylabel('Flow')
-                plt.title('Flow Comparison')
-                plt.legend()
-                plt.tight_layout()
-                plt.show()
+            plt.subplot(1, 2, 2)
+            edge_names = [f'({u},{v})' for u, v in edges]
+            x = np.arange(n_edges)
+            width = 0.4
 
-            # Plot 3: Cost polynomials for all edges
-            plt.figure(figsize=(7,5))
-            xs = np.linspace(0.0, float(args.n_vehicles), 200)
-            for i, (u, v) in enumerate(edges):
-                plt.plot(xs, a[i] * xs + b[i], label=f"({u}, {v})")
-            plt.xlabel("Flow on edge")
-            plt.ylabel("Cost c_e(x) = a_e x + b_e")
-            plt.title("Edge Cost Polynomials")
-            plt.legend(fontsize=8, ncol=2)
+            rects1 = plt.bar(x - width/2, ue_edge_flows, width, label='User Equilibrium', alpha=0.7)
+            rects2 = plt.bar(x + width/2, so_edge_flows, width, label='Social Optimum', alpha=0.7)
+
+            plt.ylabel('Vehicle Flow')
+            plt.title(f'Flow Comparison (Total Vehicles = {args.n_vehicles:.2f})')
+            plt.xticks(x, edge_names, rotation=45, ha="right")
+            plt.legend()
+            plt.grid(axis='y', linestyle='--')
             plt.tight_layout()
             plt.show()
             
